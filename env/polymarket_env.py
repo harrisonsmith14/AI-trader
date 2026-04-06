@@ -30,12 +30,25 @@ import os
 from collections import deque
 
 
+DEFAULT_REWARD_CONFIG = {
+    "skip_penalty": -0.02,
+    "win_bonus_multiplier": 1.0,
+    "loss_penalty_multiplier": 1.0,
+    "high_confidence_bonus": 0.05,
+    "high_confidence_threshold": 0.05,
+    "low_confidence_penalty": -0.05,
+    "low_confidence_threshold": 0.02,
+    "no_funds_penalty": -0.1,
+    "version": 0,
+}
+
+
 class PolymarketEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, candle_data: list, bet_size: float = 1.0, 
+    def __init__(self, candle_data: list, bet_size: float = 1.0,
                  initial_bankroll: float = 25.0, max_steps: int = 1000,
-                 entry_offset_sec: int = 240):
+                 entry_offset_sec: int = 240, reward_config: dict = None):
         super().__init__()
 
         self.candles = candle_data  # List of {open_time, open, high, low, close}
@@ -43,6 +56,12 @@ class PolymarketEnv(gym.Env):
         self.initial_bankroll = initial_bankroll
         self.max_steps = max_steps
         self.entry_offset_sec = entry_offset_sec  # seconds into window to observe
+
+        # Qwen-tunable reward weights (updated by brain/qwen_strategist.py)
+        rc = DEFAULT_REWARD_CONFIG.copy()
+        if reward_config:
+            rc.update(reward_config)
+        self.reward_config = rc
 
         # Build price lookup: timestamp (sec) -> close price
         self.price_at = {}
@@ -183,11 +202,13 @@ class PolymarketEnv(gym.Env):
 
         if ptb and entry_price and close_price and ptb > 0:
             delta_pct = (entry_price - ptb) / ptb * 100
+            abs_delta = abs(delta_pct)
             actual_dir = "UP" if close_price >= ptb else "DOWN"
             yes_price, no_price = self._estimate_token_prices(delta_pct)
+            rc = self.reward_config
 
             if action == 0:  # SKIP
-                reward = -0.02  # Small penalty for skipping (encourage learning to trade)
+                reward = rc["skip_penalty"]
                 info["action"] = "skip"
 
             elif action == 1:  # BUY UP
@@ -196,15 +217,22 @@ class PolymarketEnv(gym.Env):
                     if actual_dir == "UP":
                         profit = (1.0 - yes_price) / yes_price * self.bet_size
                         self.bankroll += self.bet_size + profit
-                        reward = profit
+                        reward = profit * rc["win_bonus_multiplier"]
+                        # Bonus for correctly trading high-confidence setups
+                        if abs_delta >= rc["high_confidence_threshold"]:
+                            reward += rc["high_confidence_bonus"]
                         self._recent_trades.append(1)
                     else:
-                        reward = -self.bet_size
+                        reward = -self.bet_size * rc["loss_penalty_multiplier"]
+                        # Extra penalty for trading weak signals
+                        if abs_delta < rc["low_confidence_threshold"]:
+                            reward += rc["low_confidence_penalty"]
                         self._recent_trades.append(0)
                     info["action"] = "buy_up"
                     info["result"] = actual_dir == "UP"
+                    info["delta_pct"] = delta_pct
                 else:
-                    reward = -0.1  # Penalize trying to trade with no funds
+                    reward = rc["no_funds_penalty"]
 
             elif action == 2:  # BUY DOWN
                 if self.bankroll >= self.bet_size:
@@ -212,15 +240,20 @@ class PolymarketEnv(gym.Env):
                     if actual_dir == "DOWN":
                         profit = (1.0 - no_price) / no_price * self.bet_size
                         self.bankroll += self.bet_size + profit
-                        reward = profit
+                        reward = profit * rc["win_bonus_multiplier"]
+                        if abs_delta >= rc["high_confidence_threshold"]:
+                            reward += rc["high_confidence_bonus"]
                         self._recent_trades.append(1)
                     else:
-                        reward = -self.bet_size
+                        reward = -self.bet_size * rc["loss_penalty_multiplier"]
+                        if abs_delta < rc["low_confidence_threshold"]:
+                            reward += rc["low_confidence_penalty"]
                         self._recent_trades.append(0)
                     info["action"] = "buy_down"
                     info["result"] = actual_dir == "DOWN"
+                    info["delta_pct"] = delta_pct
                 else:
-                    reward = -0.1
+                    reward = rc["no_funds_penalty"]
 
             # Update recent stats
             if action != 0 and len(self._recent_trades) > 0:

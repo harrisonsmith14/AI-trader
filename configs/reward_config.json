@@ -1,0 +1,13 @@
+{
+  "skip_penalty": -0.02,
+  "win_bonus_multiplier": 1.0,
+  "loss_penalty_multiplier": 1.0,
+  "high_confidence_bonus": 0.05,
+  "high_confidence_threshold": 0.05,
+  "low_confidence_penalty": -0.05,
+  "low_confidence_threshold": 0.02,
+  "no_funds_penalty": -0.1,
+  "version": 0,
+  "updated": "initial",
+  "last_reasoning": "Default reward config — not yet optimized by Qwen"
+}
