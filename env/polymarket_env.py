@@ -65,7 +65,7 @@ class PolymarketEnv(gym.Env):
 
         # Build price lookup: timestamp (sec) -> close price
         self.price_at = {}
-        for c in candles:
+        for c in self.candles:
             ts = c["open_time"] // 1000
             self.price_at[ts] = c["close"]
         
