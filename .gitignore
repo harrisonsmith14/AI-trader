@@ -1,0 +1,6 @@
+models/
+logs/
+__pycache__/
+*.pyc
+*.zip
+*.pt
