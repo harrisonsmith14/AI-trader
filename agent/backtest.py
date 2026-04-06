@@ -47,7 +47,7 @@ def backtest(model_path: str | Path, candle_data: list,
 
     try:
         from stable_baselines3 import PPO
-        model = PPO.load(str(model_path))
+        model = PPO.load(str(model_path), device="cpu")
     except Exception as e:
         return {"error": f"Failed to load model: {e}"}
 

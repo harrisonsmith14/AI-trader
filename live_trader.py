@@ -261,7 +261,7 @@ def main():
     try:
         from stable_baselines3 import PPO
         if MODEL_PATH.exists():
-            model = PPO.load(str(MODEL_PATH))
+            model = PPO.load(str(MODEL_PATH), device="cpu")
             print(f"  RL model loaded: {MODEL_PATH}")
         else:
             print(f"  No trained model found at {MODEL_PATH}")

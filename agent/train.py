@@ -115,7 +115,7 @@ def train_model(candle_path: str | Path = DEFAULT_CANDLE_PATH,
     # Load existing model or create new
     if resume and os.path.exists(resume_path + ".zip"):
         print(f"  Resuming from {resume_path}")
-        model = PPO.load(resume_path, env=train_env)
+        model = PPO.load(resume_path, env=train_env, device="cpu")
     else:
         print("  Creating new PPO model...")
         model = PPO(
@@ -135,6 +135,7 @@ def train_model(candle_path: str | Path = DEFAULT_CANDLE_PATH,
                 "net_arch": [256, 256, 128],  # Neural network layers
             },
             verbose=1,
+            device="cpu",
             tensorboard_log=os.path.join(str(PROJECT_ROOT), "logs"),
         )
 
