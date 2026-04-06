@@ -1,6 +1,9 @@
 models/
 logs/
+data/candles.json
+data/train_candles.json
 __pycache__/
 *.pyc
 *.zip
 *.pt
+.env
