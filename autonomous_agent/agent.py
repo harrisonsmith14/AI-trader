@@ -21,6 +21,9 @@ from . import weather_data, market_api, journal, sandbox, analyst
 
 logger = logging.getLogger(__name__)
 
+# Set by main() so the crash handler knows which model to use
+_current_model = "qwen3:8b"
+
 
 def print_banner(strategy_version: int, stats: dict):
     """Print the status banner."""
@@ -40,6 +43,7 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
                     dry_run: bool = True):
     """
     Scan weather markets and make trading decisions.
+    Returns (decide_fn, strategy_version) — may change if auto-fix triggers.
     This is the core cycle that runs each period.
     """
     now = datetime.now()  # Local time — weather markets use local dates
@@ -114,13 +118,35 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
             "strategy_version": strategy_version,
         }
 
-        # Call strategy
+        # Call strategy — if it crashes, Qwen fixes it automatically
         try:
             decision = decide_fn(context)
         except Exception as e:
-            print(f"    Strategy error: {e}")
-            decision = {"action": "SKIP", "bracket": None, "confidence": 0,
-                       "reasoning": f"Strategy crashed: {e}"}
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"    Strategy CRASHED: {e}")
+            print(f"    Auto-fixing with Qwen...")
+
+            fix_result = analyst.fix_crash(
+                error_msg=error_detail, context=context, model=_current_model
+            )
+
+            if fix_result["rewrote"]:
+                strategy_version = fix_result["new_version"]
+                print(f"    Fixed! Strategy v{fix_result['old_version']} -> v{strategy_version}")
+                print(f"    Fix: {fix_result['analysis'][:200]}")
+                # Reload the fixed strategy and retry this market
+                try:
+                    decide_fn = sandbox.load_strategy()
+                    decision = decide_fn(context)
+                except Exception as e2:
+                    print(f"    Fix didn't work either: {e2}")
+                    decision = {"action": "SKIP", "bracket": None, "confidence": 0,
+                               "reasoning": f"Strategy crashed twice: {e2}"}
+            else:
+                print(f"    Auto-fix failed: {fix_result.get('error', 'unknown')}")
+                decision = {"action": "SKIP", "bracket": None, "confidence": 0,
+                           "reasoning": f"Strategy crashed: {e}"}
 
         action = decision.get("action", "SKIP")
         bracket = decision.get("bracket")
@@ -167,6 +193,8 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
                 nws_forecast=nws, gfs_mean=gfs,
                 brackets=brackets, market_slug=market_slug,
             )
+
+    return decide_fn, strategy_version
 
 
 def check_resolutions(cities: list[str]):
@@ -292,6 +320,10 @@ def main():
     logging.basicConfig(level=logging.INFO,
                        format="%(asctime)s %(levelname)s %(message)s")
 
+    # Make model available to crash handler
+    global _current_model
+    _current_model = args.model
+
     # Startup checks
     print("  Checking Ollama...")
     if not analyst.check_ollama(args.model):
@@ -336,8 +368,10 @@ def main():
             # Check resolutions from previous days
             check_resolutions(args.city)
 
-            # Scan markets and make decisions
-            scan_and_decide(args.city, decide_fn, strategy_version, dry_run=not args.live)
+            # Scan markets and make decisions (may auto-fix crashed strategy)
+            decide_fn, strategy_version = scan_and_decide(
+                args.city, decide_fn, strategy_version, dry_run=not args.live
+            )
 
             # Check if Qwen should analyze
             should, reason = should_analyze(strategy_version)

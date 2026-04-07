@@ -260,6 +260,108 @@ Output the complete strategy.py code in a ```python block.
 Start with a docstring that explains your strategy in plain English."""
 
 
+def fix_crash(error_msg: str, context: dict,
+              model: str = DEFAULT_MODEL) -> dict:
+    """
+    Emergency self-healing: when the strategy crashes at runtime,
+    send the error + code + context to Qwen to fix immediately.
+
+    Returns same format as analyze_and_rewrite().
+    """
+    current_code = sandbox.get_current_strategy_code()
+    current_version = sandbox.get_current_version()
+
+    # Format the context values (skip large lists for brevity)
+    context_summary = {k: v for k, v in context.items()
+                       if k not in ("recent_trades", "brackets")}
+    context_summary["brackets_count"] = len(context.get("brackets", []))
+    context_summary["brackets_sample"] = context.get("brackets", [])[:3]
+
+    prompt = f"""Your trading strategy CRASHED with a runtime error. Fix it immediately.
+
+## Error
+```
+{error_msg}
+```
+
+## The Context Data That Was Passed
+```json
+{json.dumps(context_summary, indent=2, default=str)}
+```
+
+## Important Notes About Context Values
+- All numeric fields (nws_forecast, gfs_mean, gfs_spread, historical_bias, etc.) are guaranteed to be float or int, never None
+- brackets is always a list (may be empty)
+- recent_trades is always a list (may be empty)
+- win_rate and total_pnl are always numbers
+
+## Current Strategy Code (v{current_version}) — THIS CRASHED
+```python
+{current_code}
+```
+
+## Your Task
+1. Identify the bug from the error message
+2. Fix it while keeping the strategy logic intact
+3. Add defensive checks so similar crashes don't happen again
+4. Output the COMPLETE fixed strategy.py in a ```python block
+
+Do NOT change the strategy logic — just fix the crash. Keep the same approach,
+just make it robust against edge cases."""
+
+    logger.info(f"Sending crash fix to {model}...")
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"temperature": 0.1, "num_ctx": 16384},
+            },
+            timeout=300,
+        )
+
+        if r.status_code != 200:
+            return _error_result(current_version, f"Ollama HTTP {r.status_code}")
+
+        response_text = r.json()["message"]["content"]
+
+    except requests.RequestException as e:
+        return _error_result(current_version, f"Ollama connection failed: {e}")
+
+    # Extract code
+    code_match = re.search(r'```python\s*\n(.*?)\n\s*```', response_text, re.DOTALL)
+    if not code_match:
+        code_match = re.search(r'```\s*\n(.*?)\n\s*```', response_text, re.DOTALL)
+
+    if not code_match:
+        return _error_result(current_version, "Qwen couldn't produce a fix")
+
+    new_code = code_match.group(1)
+    new_version = current_version + 1
+
+    is_valid, error = sandbox.validate_code(new_code)
+    if not is_valid:
+        return _error_result(current_version, f"Fix failed validation: {error}")
+
+    success = sandbox.deploy_strategy(new_code, new_version)
+    if success:
+        analysis = response_text[:response_text.find("```")].strip()
+        if len(analysis) > 500:
+            analysis = analysis[:500] + "..."
+        return {
+            "rewrote": True,
+            "old_version": current_version,
+            "new_version": new_version,
+            "analysis": analysis,
+            "changes_summary": f"Crash fix: v{current_version} -> v{new_version}",
+            "error": None,
+        }
+
+    return _error_result(current_version, "Deploy failed")
+
+
 def _error_result(version: int, error: str) -> dict:
     return {
         "rewrote": False,
