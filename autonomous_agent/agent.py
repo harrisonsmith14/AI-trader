@@ -163,8 +163,16 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
 
         # Execute
         if action == "BUY" and bracket:
-            bracket_info = next((b for b in brackets if b["range"] == bracket), None)
-            if bracket_info:
+            # Dedup: skip if we already traded this city/date/bracket
+            existing = journal.get_recent_entries(days=7, entry_type="trade")
+            already_traded = any(
+                t.get("city") == city and t.get("date") == tomorrow
+                and t.get("bracket_chosen") == bracket
+                for t in existing
+            )
+            if already_traded:
+                print(f"    Already traded {city} {tomorrow} {bracket}°F — skipping duplicate")
+            elif (bracket_info := next((b for b in brackets if b["range"] == bracket), None)):
                 bracket_price = bracket_info["price"]
                 token_id = bracket_info.get("token_id")
 
