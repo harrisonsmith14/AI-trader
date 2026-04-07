@@ -175,49 +175,49 @@ def fetch_kraken_candles(days: int = 30, interval: int = 5) -> list[dict]:
 GAMMA_HOST = "https://gamma-api.polymarket.com"
 
 
-def get_ptb_from_api(window_start: int) -> float | None:
-    """
-    Get the Price To Beat from Polymarket's GAMMA API.
-
-    The PTB is in the event's eventMetadata.priceToBeat field — this is the
-    exact Chainlink BTC/USD price at the window start that Polymarket uses
-    for resolution. No Playwright needed.
-    """
+def _fetch_event_metadata(window_start: int) -> dict | None:
+    """Fetch eventMetadata dict for a given window from GAMMA API."""
     slug = f"btc-updown-5m-{window_start}"
     try:
         r = requests.get(f"{GAMMA_HOST}/events?slug={slug}", timeout=10)
         r.raise_for_status()
         events = r.json()
-
-        if not events:
-            return None
-
-        event = events[0]
-
-        # Primary: eventMetadata.priceToBeat (exact Chainlink price)
-        metadata = event.get("eventMetadata")
-        if metadata:
-            ptb = metadata.get("priceToBeat")
-            if ptb:
-                price = float(ptb)
-                if 10000 < price < 500000:
-                    return price
-
-        # Fallback: parse from market question/description text
-        import re
-        markets = event.get("markets", [])
-        if markets:
-            market = markets[0]
-            for text in [market.get("question", ""), market.get("description", ""),
-                        market.get("title", ""), event.get("title", "")]:
-                match = re.search(r'\$\s*([\d,]+\.?\d*)', text)
-                if match:
-                    price = float(match.group(1).replace(',', ''))
-                    if 10000 < price < 500000:
-                        return price
-
+        if events:
+            return events[0].get("eventMetadata")
     except requests.RequestException as e:
-        logger.warning(f"GAMMA API request failed: {e}")
+        logger.warning(f"GAMMA API request failed for {slug}: {e}")
+    return None
+
+
+def get_ptb_from_api(window_start: int) -> float | None:
+    """
+    Get the Price To Beat from Polymarket's GAMMA API.
+
+    The PTB is the exact Chainlink BTC/USD price at the window boundary.
+    It only appears in eventMetadata after the market closes, so for active
+    markets we use the previous window's finalPrice instead — the Chainlink
+    price at window N's close equals window N+1's priceToBeat.
+    """
+    # Primary: current window's eventMetadata.priceToBeat
+    metadata = _fetch_event_metadata(window_start)
+    if metadata:
+        ptb = metadata.get("priceToBeat")
+        if ptb:
+            price = float(ptb)
+            if 10000 < price < 500000:
+                logger.info(f"PTB from current window metadata: {price}")
+                return price
+
+    # Fallback: previous window's finalPrice (== current window's PTB)
+    prev_window = window_start - 300
+    prev_metadata = _fetch_event_metadata(prev_window)
+    if prev_metadata:
+        final_price = prev_metadata.get("finalPrice")
+        if final_price:
+            price = float(final_price)
+            if 10000 < price < 500000:
+                logger.info(f"PTB from previous window finalPrice: {price}")
+                return price
 
     return None
 
