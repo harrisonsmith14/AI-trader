@@ -97,16 +97,17 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
                 ]
             print(f"    (No live market found — using estimated brackets for observation)")
 
+        # Never pass None values — use 0.0 defaults so strategy code doesn't crash
         context = {
             "city": city,
             "date": tomorrow,
-            "nws_forecast": nws,
-            "gfs_mean": gfs,
-            "gfs_low": forecasts["gfs_low"],
-            "gfs_high": forecasts["gfs_high"],
-            "gfs_spread": gfs_spread,
+            "nws_forecast": nws or 0.0,
+            "gfs_mean": gfs or 0.0,
+            "gfs_low": forecasts["gfs_low"] or 0.0,
+            "gfs_high": forecasts["gfs_high"] or 0.0,
+            "gfs_spread": gfs_spread or 0.0,
             "brackets": brackets,
-            "historical_bias": forecasts["forecast_bias"],
+            "historical_bias": forecasts["forecast_bias"] or 0.0,
             "recent_trades": journal.get_recent_entries(days=14, entry_type="trade"),
             "win_rate": journal.get_trade_stats().get("win_rate", 0),
             "total_pnl": journal.get_trade_stats().get("total_pnl", 0),
