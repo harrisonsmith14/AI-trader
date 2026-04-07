@@ -392,11 +392,14 @@ def main():
 
                 if result["rewrote"]:
                     print(f"\n  Strategy rewritten: v{result['old_version']} -> v{result['new_version']}")
-                    decide_fn = sandbox.load_strategy()
-                    strategy_version = result["new_version"]
-
-                    # Check if we should revert (3 consecutive worse versions)
-                    # This is tracked across cycles
+                    try:
+                        decide_fn = sandbox.load_strategy()
+                        strategy_version = result["new_version"]
+                    except Exception as load_err:
+                        print(f"  New strategy failed to load: {load_err}")
+                        print(f"  Reverting to v{result['old_version']}...")
+                        sandbox.revert_to_version(result["old_version"])
+                        decide_fn = sandbox.load_strategy()
                 elif result.get("error"):
                     print(f"  Error: {result['error']}")
                 else:

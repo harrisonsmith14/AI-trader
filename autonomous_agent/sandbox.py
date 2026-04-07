@@ -135,12 +135,19 @@ def save_strategy_version(code: str, version: int):
     logger.info(f"Saved strategy version {version} to {path}")
 
 
+def clean_code(code: str) -> str:
+    """Strip non-ASCII characters that cause Python encoding errors."""
+    return code.encode("ascii", errors="ignore").decode("ascii")
+
+
 def deploy_strategy(code: str, version: int) -> bool:
     """
     Validate and deploy a new strategy.
 
     Returns True if deployed successfully.
     """
+    code = clean_code(code)
+
     is_valid, error = validate_code(code)
 
     if not is_valid:
@@ -150,8 +157,8 @@ def deploy_strategy(code: str, version: int) -> bool:
     # Save version
     save_strategy_version(code, version)
 
-    # Deploy to strategy.py
-    STRATEGY_PATH.write_text(code)
+    # Deploy to strategy.py with explicit UTF-8 encoding
+    STRATEGY_PATH.write_text(code, encoding="utf-8")
     logger.info(f"Strategy v{version} deployed to {STRATEGY_PATH}")
 
     return True

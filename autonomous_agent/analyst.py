@@ -253,6 +253,7 @@ Your decide(context) function receives:
 - Return: {{"action": "BUY" or "SKIP", "bracket": "54-55" or None, "confidence": float, "reasoning": str}}
 - You can use: math, statistics, any pure Python logic
 - You CANNOT use: os, sys, requests, subprocess, open, or any I/O
+- Use ONLY ASCII characters in your code — no degree symbols, em dashes, or unicode. Write "degrees F" not "°F"
 - Be specific in your reasoning — explain WHY you make each decision
 - If you don't have enough data yet, it's OK to SKIP and observe more
 
@@ -307,7 +308,8 @@ def fix_crash(error_msg: str, context: dict,
 4. Output the COMPLETE fixed strategy.py in a ```python block
 
 Do NOT change the strategy logic — just fix the crash. Keep the same approach,
-just make it robust against edge cases."""
+just make it robust against edge cases.
+Use ONLY ASCII characters — no degree symbols, em dashes, or unicode."""
 
     logger.info(f"Sending crash fix to {model}...")
     try:
