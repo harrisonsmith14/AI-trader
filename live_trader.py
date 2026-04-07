@@ -65,20 +65,6 @@ def get_btc_price() -> float | None:
     return get_live_btc_price()
 
 
-def get_price_to_beat(window_start: int) -> float | None:
-    """
-    Get Price To Beat from Polymarket GAMMA API.
-    Parses the market question text for the exact Chainlink reference price.
-    Falls back to CEX price if API doesn't return PTB.
-    """
-    ptb = get_ptb_from_api(window_start)
-    if ptb:
-        return ptb
-
-    # Fallback: CEX price (less accurate but better than nothing)
-    logger.warning("Could not get PTB from API, falling back to CEX price")
-    return get_btc_price()
-
 
 def build_observation(ptb: float, live_price: float, time_remaining_sec: int,
                       recent_wins: int, recent_total: int, recent_pnl: float,
@@ -304,11 +290,16 @@ def main():
                 config = load_strategy_config()  # Reload in case Qwen updated it
 
                 print(f"\n  Window {window_start}")
-                ptb = get_price_to_beat(window_start)
-                if ptb:
-                    print(f"  PTB: ${ptb:,.2f} (from {'API' if get_ptb_from_api(window_start) else 'CEX fallback'})")
+                ptb_api = get_ptb_from_api(window_start)
+                if ptb_api:
+                    ptb = ptb_api
+                    print(f"  PTB: ${ptb:,.2f} (from API)")
                 else:
-                    print(f"  Could not get PTB for this window")
+                    ptb = get_btc_price()
+                    if ptb:
+                        print(f"  PTB: ${ptb:,.2f} (from CEX at window boundary)")
+                    else:
+                        print(f"  Could not get PTB for this window")
 
             live_price = get_btc_price()
 

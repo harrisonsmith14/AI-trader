@@ -208,21 +208,17 @@ def get_ptb_from_api(window_start: int) -> float | None:
                 logger.info(f"PTB from current window metadata: {price}")
                 return price
 
-    # Fallback: walk back through previous windows to find a closed one.
-    # Its finalPrice == the next window's priceToBeat (verified).
-    for i in range(1, 7):  # Check up to 30 min back
-        prev_window = window_start - (300 * i)
-        prev_metadata = _fetch_event_metadata(prev_window)
-        if prev_metadata:
-            final_price = prev_metadata.get("finalPrice")
-            if final_price:
-                price = float(final_price)
-                if 10000 < price < 500000:
-                    if i == 1:
-                        logger.info(f"PTB from previous window finalPrice: ${price:,.2f}")
-                    else:
-                        logger.info(f"PTB from {i} windows back finalPrice: ${price:,.2f} (approx)")
-                    return price
+    # Fallback: check only the immediately previous window's finalPrice.
+    # Walking back 2+ windows gives a stale price that's less accurate
+    # than a live CEX spot price, so we let the caller handle that fallback.
+    prev_metadata = _fetch_event_metadata(window_start - 300)
+    if prev_metadata:
+        final_price = prev_metadata.get("finalPrice")
+        if final_price:
+            price = float(final_price)
+            if 10000 < price < 500000:
+                logger.info(f"PTB from previous window finalPrice: ${price:,.2f}")
+                return price
 
     return None
 
