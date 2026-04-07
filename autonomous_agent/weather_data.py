@@ -26,6 +26,8 @@ CITY_COORDS = {
     "LA": {"lat": 33.9425, "lon": -118.4081, "station": "KLAX", "name": "Los Angeles (LAX)"},
     "SF": {"lat": 37.6213, "lon": -122.3790, "station": "KSFO", "name": "San Francisco (SFO)"},
     "Atlanta": {"lat": 33.6407, "lon": -84.4277, "station": "KATL", "name": "Atlanta (Hartsfield)"},
+    "Miami": {"lat": 25.7959, "lon": -80.2870, "station": "KMIA", "name": "Miami (MIA)"},
+    "Denver": {"lat": 39.8561, "lon": -104.6737, "station": "KDEN", "name": "Denver (DEN)"},
 }
 
 HISTORY_PATH = Path(__file__).parent.parent / "logs" / "weather_history.jsonl"
@@ -66,7 +68,7 @@ def get_nws_forecast(city: str, date: str = None) -> dict | None:
 
         # Parse target date
         if date is None:
-            target = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+            target = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
         else:
             target = date
 
@@ -172,8 +174,8 @@ def get_historical_actuals(city: str, days: int = 14) -> list[dict]:
         return []
 
     coords = CITY_COORDS[city]
-    end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     try:
         url = "https://archive-api.open-meteo.com/v1/archive"
@@ -259,7 +261,7 @@ def get_all_forecasts(city: str, date: str = None) -> dict:
 
     return {
         "city": city,
-        "date": date or (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d"),
+        "date": date or (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
         "nws": nws,
         "gfs": gfs,
         "forecast_bias": bias,
