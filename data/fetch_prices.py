@@ -177,37 +177,44 @@ GAMMA_HOST = "https://gamma-api.polymarket.com"
 
 def get_ptb_from_api(window_start: int) -> float | None:
     """
-    Get the Price To Beat from Polymarket's GAMMA API by parsing the market question.
+    Get the Price To Beat from Polymarket's GAMMA API.
 
-    The market question contains the reference price, e.g.:
-    "Will Bitcoin be above $69,801.99 at 3:45 PM ET?"
-
-    This is the Chainlink price at window start — the ACTUAL resolution reference.
-    No Playwright needed.
+    The PTB is in the event's eventMetadata.priceToBeat field — this is the
+    exact Chainlink BTC/USD price at the window start that Polymarket uses
+    for resolution. No Playwright needed.
     """
-    import re
-
     slug = f"btc-updown-5m-{window_start}"
     try:
         r = requests.get(f"{GAMMA_HOST}/events?slug={slug}", timeout=10)
         r.raise_for_status()
         events = r.json()
 
-        if not events or not events[0].get("markets"):
+        if not events:
             return None
 
-        market = events[0]["markets"][0]
-        question = market.get("question", "")
-        description = market.get("description", "")
+        event = events[0]
 
-        # Parse PTB from question or description text
-        # Patterns like: "$69,801.99" or "above $69,801.99"
-        for text in [question, description, market.get("title", "")]:
-            match = re.search(r'\$\s*([\d,]+\.?\d*)', text)
-            if match:
-                price = float(match.group(1).replace(',', ''))
-                if 10000 < price < 500000:  # Sanity check for BTC range
+        # Primary: eventMetadata.priceToBeat (exact Chainlink price)
+        metadata = event.get("eventMetadata")
+        if metadata:
+            ptb = metadata.get("priceToBeat")
+            if ptb:
+                price = float(ptb)
+                if 10000 < price < 500000:
                     return price
+
+        # Fallback: parse from market question/description text
+        import re
+        markets = event.get("markets", [])
+        if markets:
+            market = markets[0]
+            for text in [market.get("question", ""), market.get("description", ""),
+                        market.get("title", ""), event.get("title", "")]:
+                match = re.search(r'\$\s*([\d,]+\.?\d*)', text)
+                if match:
+                    price = float(match.group(1).replace(',', ''))
+                    if 10000 < price < 500000:
+                        return price
 
     except requests.RequestException as e:
         logger.warning(f"GAMMA API request failed: {e}")
