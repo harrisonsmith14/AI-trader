@@ -26,6 +26,11 @@ def find_weather_markets(cities: list[str] = None) -> list[dict]:
     """
     Search Polymarket for active daily temperature markets.
 
+    Uses three complementary approaches to discover markets:
+    1. Tag-based search: GET /events?tag=Weather&closed=false&limit=100
+    2. Slug-contains search: GET /events?slug_contains=temperature&closed=false&limit=100
+    3. Text search: GET /public-search?q=temperature&events_status=active
+
     Returns list of markets with bracket info:
     [
         {
@@ -45,161 +50,117 @@ def find_weather_markets(cities: list[str] = None) -> list[dict]:
     ]
     """
     markets = []
+    seen_slugs = set()
 
-    # Search for temperature markets
-    search_terms = ["highest temperature", "temperature"]
-    if cities:
-        search_terms = [f"highest temperature in {c}" for c in cities]
+    def _collect(events):
+        for event in events:
+            parsed = _parse_weather_event(event, cities)
+            if parsed and parsed["slug"] not in seen_slugs:
+                seen_slugs.add(parsed["slug"])
+                markets.append(parsed)
 
-    for term in search_terms:
-        try:
-            r = requests.get(
-                f"{GAMMA_HOST}/events",
-                params={"tag": "temperature", "active": "true", "closed": "false", "limit": 50},
-                timeout=15,
-            )
-
-            if r.status_code == 200:
-                events = r.json()
-                for event in events:
-                    parsed = _parse_weather_event(event)
-                    if parsed:
-                        markets.append(parsed)
-
-            # Also try searching by title
-            r = requests.get(
-                f"{GAMMA_HOST}/events",
-                params={"title": term, "active": "true", "closed": "false", "limit": 50},
-                timeout=15,
-            )
-
-            if r.status_code == 200:
-                events = r.json()
-                for event in events:
-                    parsed = _parse_weather_event(event)
-                    if parsed and parsed["slug"] not in [m["slug"] for m in markets]:
-                        markets.append(parsed)
-
-        except requests.RequestException as e:
-            logger.warning(f"Market search failed for '{term}': {e}")
-
-    # Try the series slug approach
+    # --- Approach 1: Tag-based search (tag is case-sensitive: "Weather") ---
     try:
         r = requests.get(
             f"{GAMMA_HOST}/events",
-            params={"seriesSlug": "nyc-temperature", "active": "true", "limit": 20},
+            params={"tag": "Weather", "closed": "false", "limit": 100},
             timeout=15,
         )
         if r.status_code == 200:
-            for event in r.json():
-                parsed = _parse_weather_event(event)
-                if parsed and parsed["slug"] not in [m["slug"] for m in markets]:
-                    markets.append(parsed)
-    except requests.RequestException:
-        pass
+            _collect(r.json())
+            logger.debug(f"Tag=Weather returned {len(r.json())} events")
+    except requests.RequestException as e:
+        logger.warning(f"Tag search failed: {e}")
+
+    # --- Approach 2: Slug-contains search (undocumented but used in the wild) ---
+    slug_patterns = ["temperature", "weather", "temp-"]
+    for pattern in slug_patterns:
+        try:
+            r = requests.get(
+                f"{GAMMA_HOST}/events",
+                params={"slug_contains": pattern, "closed": "false", "limit": 100},
+                timeout=15,
+            )
+            if r.status_code == 200:
+                _collect(r.json())
+                logger.debug(f"slug_contains={pattern} returned {len(r.json())} events")
+        except requests.RequestException as e:
+            logger.warning(f"Slug search for '{pattern}' failed: {e}")
+
+    # --- Approach 3: Public text search endpoint ---
+    search_queries = ["highest temperature", "temperature"]
+    if cities:
+        search_queries = [f"highest temperature {c}" for c in cities] + search_queries
+
+    for query in search_queries:
+        try:
+            r = requests.get(
+                f"{GAMMA_HOST}/public-search",
+                params={
+                    "q": query,
+                    "events_status": "active",
+                    "limit_per_type": 20,
+                },
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                # public-search returns {"events": [...], "markets": [...], ...}
+                events = []
+                if isinstance(data, dict):
+                    events = data.get("events", [])
+                elif isinstance(data, list):
+                    events = data
+                _collect(events)
+                logger.debug(f"public-search q='{query}' returned {len(events)} events")
+        except requests.RequestException as e:
+            logger.warning(f"Public search for '{query}' failed: {e}")
 
     logger.info(f"Found {len(markets)} weather markets")
     return markets
 
 
-def _parse_weather_event(event: dict) -> dict | None:
-    """Parse a GAMMA API event into our weather market format."""
+def _parse_weather_event(event: dict, cities: list[str] = None) -> dict | None:
+    """Parse a GAMMA API event into our weather market format.
+
+    Handles both bracket-style markets ("50-51°F") and threshold-style
+    markets ("Will NYC high exceed 55°F?"). Also checks the groupItemTitle
+    field which some markets use instead of question.
+    """
     title = event.get("title", "")
     slug = event.get("slug", "")
 
-    # Check if this is a temperature market
-    if not re.search(r'(?i)(temperature|temp)', title):
+    # Check if this is a temperature market (check title, slug, and description)
+    searchable = f"{title} {slug} {event.get('description', '')}"
+    if not re.search(r'(?i)(temperature|temp\b|°f|degrees)', searchable):
         return None
 
     # Extract city
-    city = None
-    city_patterns = {
-        "NYC": r'(?i)\b(NYC|New York|LaGuardia)\b',
-        "Chicago": r'(?i)\b(Chicago|O\'?Hare)\b',
-        "LA": r'(?i)\b(LA|Los Angeles|LAX)\b',
-        "SF": r'(?i)\b(SF|San Francisco|SFO)\b',
-        "Atlanta": r'(?i)\b(Atlanta|Hartsfield)\b',
-        "London": r'(?i)\b(London)\b',
-    }
-    for city_key, pattern in city_patterns.items():
-        if re.search(pattern, title):
-            city = city_key
-            break
+    city = _extract_city(title)
 
+    # If cities filter is set, skip non-matching cities
+    if cities and city not in cities and city != title:
+        return None
+
+    # If we couldn't match a known city, use the title as fallback
     if not city:
-        # Try to extract any city name
-        city = title  # Use full title as identifier
+        city = title
 
-    # Extract date from title
-    date_match = re.search(r'(?:on\s+)?(\w+\s+\d{1,2})', title)
-    date_str = date_match.group(1) if date_match else ""
+    # Extract date from title (handles "April 8", "on April 8", "Apr 8, 2026")
+    date_str = ""
+    date_match = re.search(
+        r'(?:on\s+)?(\w+\.?\s+\d{1,2}(?:\s*,?\s*\d{4})?)', title
+    )
+    if date_match:
+        date_str = date_match.group(1).strip().rstrip(",")
 
-    # Parse brackets from markets
+    # Parse brackets/outcomes from the event's sub-markets
     brackets = []
     event_markets = event.get("markets", [])
     for market in event_markets:
-        question = market.get("question", "")
-        outcomes = market.get("outcomes", "")
-
-        if isinstance(outcomes, str):
-            try:
-                outcomes = json.loads(outcomes)
-            except (json.JSONDecodeError, TypeError):
-                outcomes = []
-
-        prices_raw = market.get("outcomePrices", "[]")
-        if isinstance(prices_raw, str):
-            try:
-                prices = json.loads(prices_raw)
-            except (json.JSONDecodeError, TypeError):
-                prices = []
-        else:
-            prices = prices_raw
-
-        tokens_raw = market.get("clobTokenIds", "[]")
-        if isinstance(tokens_raw, str):
-            try:
-                tokens = json.loads(tokens_raw)
-            except (json.JSONDecodeError, TypeError):
-                tokens = []
-        else:
-            tokens = tokens_raw
-
-        # Parse temperature range from question or outcomes
-        temp_match = re.search(r'(\d{1,3})\s*[-–]\s*(\d{1,3})', question)
-        if temp_match:
-            low = int(temp_match.group(1))
-            high = int(temp_match.group(2))
-            price = float(prices[0]) if prices else 0.5
-            token_id = tokens[0] if tokens else None
-
-            brackets.append({
-                "range": f"{low}-{high}",
-                "low": low,
-                "high": high,
-                "outcome": f"{low}-{high}°F",
-                "price": round(price, 4),
-                "token_id": token_id,
-                "market_id": market.get("id"),
-                "question": question,
-            })
-        elif outcomes:
-            # Try to parse from outcomes list
-            for idx, outcome in enumerate(outcomes):
-                temp_match = re.search(r'(\d{1,3})', str(outcome))
-                if temp_match:
-                    temp = int(temp_match.group(1))
-                    price = float(prices[idx]) if idx < len(prices) else 0.5
-                    token_id = tokens[idx] if idx < len(tokens) else None
-                    brackets.append({
-                        "range": str(outcome),
-                        "low": temp,
-                        "high": temp + 1,
-                        "outcome": str(outcome),
-                        "price": round(price, 4),
-                        "token_id": token_id,
-                        "market_id": market.get("id"),
-                    })
+        bracket = _parse_market_bracket(market)
+        if bracket:
+            brackets.append(bracket)
 
     if not brackets:
         return None
@@ -217,6 +178,147 @@ def _parse_weather_event(event: dict) -> dict | None:
         "active": event.get("active", True),
         "closed": event.get("closed", False),
     }
+
+
+# City alias map — matches Polymarket naming conventions
+CITY_ALIASES = {
+    "NYC": [r'NYC', r'New York', r'LaGuardia', r'KLGA'],
+    "Chicago": [r'Chicago', r"O'?Hare", r'KORD'],
+    "LA": [r'LA\b', r'Los Angeles', r'LAX', r'KLAX'],
+    "SF": [r'SF\b', r'San Francisco', r'SFO', r'KSFO'],
+    "Atlanta": [r'Atlanta', r'Hartsfield', r'KATL'],
+    "Miami": [r'Miami', r'KMIA'],
+    "Denver": [r'Denver', r'KDEN'],
+    "London": [r'London', r'EGLC'],
+    "Helsinki": [r'Helsinki'],
+    "Hong Kong": [r'Hong Kong'],
+    "Seoul": [r'Seoul'],
+}
+
+
+def _extract_city(text: str) -> str | None:
+    """Extract a recognized city from market text."""
+    for city_key, aliases in CITY_ALIASES.items():
+        pattern = r'(?i)\b(' + '|'.join(aliases) + r')\b'
+        if re.search(pattern, text):
+            return city_key
+    return None
+
+
+def _parse_market_bracket(market: dict) -> dict | None:
+    """Parse a single sub-market into a bracket dict.
+
+    Handles multiple question formats:
+    - Bracket range: "50-51" or "50–51" in question/groupItemTitle
+    - Threshold: "55°F or higher" / "below 45°F"
+    - Outcome labels: outcomes=["50-51°F", "52-53°F"]
+    """
+    # Try question first, then groupItemTitle (some markets use this)
+    question = market.get("question", "") or market.get("groupItemTitle", "")
+
+    # Skip closed/resolved sub-markets with extreme prices
+    prices = _parse_json_field(market.get("outcomePrices", "[]"))
+    if prices:
+        try:
+            yes_price = float(prices[0])
+            if yes_price > 0.98 or yes_price < 0.02:
+                return None  # Already resolved, skip
+        except (ValueError, IndexError):
+            pass
+
+    tokens = _parse_json_field(market.get("clobTokenIds", "[]"))
+    outcomes = _parse_json_field(market.get("outcomes", "[]"))
+
+    # --- Try bracket range pattern: "50-51", "50–51", "50 - 51" ---
+    temp_match = re.search(r'(\d{1,3})\s*[-–]\s*(\d{1,3})', question)
+    if temp_match:
+        low = int(temp_match.group(1))
+        high = int(temp_match.group(2))
+        price = float(prices[0]) if prices else 0.5
+        token_id = tokens[0] if tokens else None
+
+        return {
+            "range": f"{low}-{high}",
+            "low": low,
+            "high": high,
+            "outcome": f"{low}-{high}°F",
+            "price": round(price, 4),
+            "token_id": token_id,
+            "market_id": market.get("id"),
+            "question": question,
+        }
+
+    # --- Try threshold pattern: "55°F or higher", "below 45°F" ---
+    threshold_match = re.search(
+        r'(\d{1,3})\s*°?\s*[fF]?\s*(?:or\s+)?(?:higher|above|more)',
+        question
+    )
+    if threshold_match:
+        temp = int(threshold_match.group(1))
+        price = float(prices[0]) if prices else 0.5
+        token_id = tokens[0] if tokens else None
+        return {
+            "range": f"{temp}+",
+            "low": temp,
+            "high": temp + 20,
+            "outcome": f"{temp}°F or higher",
+            "price": round(price, 4),
+            "token_id": token_id,
+            "market_id": market.get("id"),
+            "question": question,
+        }
+
+    below_match = re.search(
+        r'(?:below|under|less\s+than)\s*(\d{1,3})\s*°?\s*[fF]?',
+        question
+    )
+    if below_match:
+        temp = int(below_match.group(1))
+        price = float(prices[0]) if prices else 0.5
+        token_id = tokens[0] if tokens else None
+        return {
+            "range": f"<{temp}",
+            "low": temp - 20,
+            "high": temp,
+            "outcome": f"Below {temp}°F",
+            "price": round(price, 4),
+            "token_id": token_id,
+            "market_id": market.get("id"),
+            "question": question,
+        }
+
+    # --- Try parsing from outcomes list ---
+    if outcomes:
+        for idx, outcome in enumerate(outcomes):
+            temp_match = re.search(r'(\d{1,3})\s*[-–]\s*(\d{1,3})', str(outcome))
+            if temp_match:
+                low = int(temp_match.group(1))
+                high = int(temp_match.group(2))
+                price = float(prices[idx]) if idx < len(prices) else 0.5
+                token_id = tokens[idx] if idx < len(tokens) else None
+                return {
+                    "range": f"{low}-{high}",
+                    "low": low,
+                    "high": high,
+                    "outcome": str(outcome),
+                    "price": round(price, 4),
+                    "token_id": token_id,
+                    "market_id": market.get("id"),
+                }
+
+    return None
+
+
+def _parse_json_field(raw) -> list:
+    """Parse a JSON field that may be a string or already a list."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
 
 
 def get_bracket_prices(event_slug: str) -> list[dict]:
@@ -336,20 +438,38 @@ if __name__ == "__main__":
 
     if not markets:
         print("  No weather markets found via standard search.")
-        print("  Trying direct search...")
-        # Try a broader search
+        print("  Trying diagnostic queries...")
+        # Diagnostic: show what each approach returns
+        for label, params in [
+            ("tag=Weather", {"tag": "Weather", "closed": "false", "limit": 5}),
+            ("slug_contains=temperature", {"slug_contains": "temperature", "closed": "false", "limit": 5}),
+        ]:
+            try:
+                r = requests.get(f"{GAMMA_HOST}/events", params=params, timeout=15)
+                print(f"\n  [{label}] status={r.status_code}, count={len(r.json()) if r.status_code == 200 else 'N/A'}")
+                if r.status_code == 200:
+                    for e in r.json()[:3]:
+                        print(f"    - {e.get('title', 'untitled')} [{e.get('slug', '')}]")
+            except Exception as e:
+                print(f"  [{label}] failed: {e}")
+        # Also try public-search
         try:
             r = requests.get(
-                f"{GAMMA_HOST}/events",
-                params={"limit": 20, "active": "true"},
+                f"{GAMMA_HOST}/public-search",
+                params={"q": "temperature", "limit_per_type": 5},
                 timeout=15,
             )
+            print(f"\n  [public-search q=temperature] status={r.status_code}")
             if r.status_code == 200:
-                events = r.json()
-                for e in events[:5]:
-                    print(f"  - {e.get('title', 'untitled')} [{e.get('slug', '')}]")
+                data = r.json()
+                if isinstance(data, dict):
+                    for key, val in data.items():
+                        if isinstance(val, list):
+                            print(f"    {key}: {len(val)} results")
+                            for item in val[:3]:
+                                print(f"      - {item.get('title', item.get('question', str(item)[:80]))}")
         except Exception as e:
-            print(f"  Search failed: {e}")
+            print(f"  [public-search] failed: {e}")
     else:
         for m in markets:
             print(f"\n  {m['title']}")
