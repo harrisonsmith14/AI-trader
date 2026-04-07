@@ -339,14 +339,32 @@ def main():
         print(f"  Run: ollama serve && ollama pull {args.model}")
         return
 
-    # Load strategy
+    # Load strategy (auto-revert if current version is broken)
     print("  Loading strategy...")
     try:
         decide_fn = sandbox.load_strategy()
         strategy_version = sandbox.get_current_version()
     except Exception as e:
-        print(f"  Failed to load strategy: {e}")
-        return
+        print(f"  Current strategy failed to load: {e}")
+        print(f"  Attempting auto-revert...")
+
+        # Try each previous version from newest to oldest
+        reverted = False
+        current_v = sandbox.get_current_version()
+        for v in range(current_v - 1, 0, -1):
+            try:
+                if sandbox.revert_to_version(v):
+                    decide_fn = sandbox.load_strategy()
+                    strategy_version = v
+                    print(f"  Reverted to v{v} successfully!")
+                    reverted = True
+                    break
+            except Exception:
+                continue
+
+        if not reverted:
+            print(f"  All versions failed. Cannot start.")
+            return
 
     stats = journal.get_trade_stats()
     print_banner(strategy_version, stats)
