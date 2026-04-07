@@ -42,7 +42,7 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
     Scan weather markets and make trading decisions.
     This is the core cycle that runs each period.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now()  # Local time — weather markets use local dates
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     today = now.strftime("%Y-%m-%d")
 
@@ -170,7 +170,7 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
 
 def check_resolutions(cities: list[str]):
     """Check if any recent markets have resolved and update journal."""
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     print(f"\n  Checking resolutions for {yesterday}...")
 
@@ -276,8 +276,10 @@ def should_analyze(strategy_version: int) -> tuple[bool, str]:
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Weather Trading Agent")
     parser.add_argument("--live", action="store_true", help="Enable real trading")
-    parser.add_argument("--city", type=str, nargs="+", default=["NYC", "Chicago", "LA"],
-                       help="Cities to trade (default: NYC Chicago LA)")
+    # All cities with active Polymarket weather markets
+    all_cities = ["NYC", "Chicago", "LA", "SF", "Atlanta", "Miami", "Denver"]
+    parser.add_argument("--city", type=str, nargs="+", default=all_cities,
+                       help=f"Cities to trade (default: all {len(all_cities)})")
     parser.add_argument("--model", type=str, default="qwen3:8b",
                        help="Ollama model for analysis")
     parser.add_argument("--interval", type=int, default=3600,
