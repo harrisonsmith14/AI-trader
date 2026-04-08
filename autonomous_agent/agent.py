@@ -209,9 +209,16 @@ def check_resolutions(cities: list[str]):
     """Check if any recent markets have resolved and update journal."""
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # Skip if we already logged resolutions for yesterday
+    existing_resolutions = journal.get_recent_entries(days=3, entry_type="resolution")
+    already_resolved = {(r.get("city"), r.get("date")) for r in existing_resolutions}
+
     print(f"\n  Checking resolutions for {yesterday}...")
 
     for city in cities:
+        if (city, yesterday) in already_resolved:
+            continue
+
         # Get historical actual temperature
         actuals = weather_data.get_historical_actuals(city, days=3)
 
