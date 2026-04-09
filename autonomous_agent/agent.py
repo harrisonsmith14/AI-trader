@@ -250,7 +250,27 @@ def check_resolutions(cities: list[str]):
                 trades = journal.get_recent_entries(days=3, entry_type="trade")
                 for trade in trades:
                     if trade.get("city") == city and trade.get("date") == yesterday and trade.get("result") is None:
-                        won = trade.get("bracket_chosen") == winning_bracket
+                        bracket_chosen = trade.get("bracket_chosen", "")
+                        won = False
+
+                        # Exact bracket match: "50-51" == "50-51"
+                        if bracket_chosen == winning_bracket:
+                            won = True
+                        # Threshold bracket: "46+" means 46 or higher
+                        elif bracket_chosen.endswith("+"):
+                            try:
+                                threshold = int(bracket_chosen[:-1])
+                                won = actual >= threshold
+                            except ValueError:
+                                pass
+                        # Below threshold: "<46" means below 46
+                        elif bracket_chosen.startswith("<"):
+                            try:
+                                threshold = int(bracket_chosen[1:])
+                                won = actual < threshold
+                            except ValueError:
+                                pass
+
                         bracket_price = trade.get("bracket_price", 0.5)
                         if won:
                             pnl = round((1.0 - bracket_price), 2)
