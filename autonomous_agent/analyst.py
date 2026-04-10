@@ -60,10 +60,14 @@ def analyze_and_rewrite(model: str = DEFAULT_MODEL,
             "error": None,
         }
 
+    # Get version history summary so Qwen can see if it's spiraling
+    version_history = _get_version_history(current_version)
+
     # Build the prompt
     prompt = _build_prompt(
         current_code, current_version, trades, skips,
-        observations, resolutions, stats, trigger_reason
+        observations, resolutions, stats, trigger_reason,
+        version_history
     )
 
     # Call Qwen
@@ -146,10 +150,39 @@ def analyze_and_rewrite(model: str = DEFAULT_MODEL,
         return _error_result(current_version, "Deploy failed after validation passed")
 
 
+def _get_version_history(current_version: int, lookback: int = 5) -> str:
+    """Extract version docstrings to show how the strategy has evolved."""
+    import re
+    versions_dir = sandbox.VERSIONS_DIR
+    if not versions_dir.exists():
+        return "No version history yet."
+
+    history = []
+    start = max(1, current_version - lookback)
+    for v in range(start, current_version + 1):
+        path = versions_dir / f"strategy_v{v:03d}.py"
+        if not path.exists():
+            continue
+        try:
+            code = path.read_text(encoding="utf-8", errors="ignore")
+            # Extract docstring
+            doc_match = re.search(r'"""(.*?)"""', code, re.DOTALL)
+            if doc_match:
+                doc = doc_match.group(1).strip()
+                # Take first 300 chars
+                summary = doc[:300]
+                history.append(f"v{v}: {summary}")
+        except Exception:
+            pass
+
+    return "\n\n".join(history) if history else "No readable version history."
+
+
 def _build_prompt(current_code: str, version: int,
                   trades: list, skips: list, observations: list,
                   resolutions: list, stats: dict,
-                  trigger_reason: str) -> str:
+                  trigger_reason: str,
+                  version_history: str = "") -> str:
     """Build the analysis prompt for Qwen."""
 
     # Format trades for display
@@ -222,53 +255,113 @@ Your strategy is a Python function that takes market context and returns a tradi
 ## Performance Statistics
 {stats_str}
 
-## How Weather Markets Work
-- Polymarket has daily "Highest temperature in [City] on [Date]?" markets
-- Outcomes are 2°F brackets: 50-51°F, 52-53°F, 54-55°F, etc.
-- Each bracket has a price (probability). Buying at $0.40 means market thinks 40% chance.
-- If you buy the correct bracket at $0.40, you get $1.00 back (profit: $0.60)
-- If wrong, you lose your $0.40
-- Resolution is from airport weather stations (Weather Underground)
+## Your Recent Strategy Evolution (last 5 versions)
+Look at this carefully — if you see a pattern of progressively MORE conservative
+strategies (smaller positions, higher thresholds, more checks), you are in a
+death spiral. Reverse direction.
+
+{version_history}
+
+## How These Markets Work (READ CAREFULLY)
+
+Polymarket has daily "Highest temperature in [City] on [Date]?" markets:
+- Outcomes are 2 degree F brackets: 50-51, 52-53, 54-55, etc.
+- Most markets have 5-10 brackets total
+- Each bracket has a price (probability). Buying at 0.40 means market thinks 40% chance.
+- If you buy the WINNING bracket at 0.40, you get 1.00 back (profit: 0.60)
+- If wrong, you lose the price you paid
+
+### CRITICAL: Win Rate Math
+- Random guessing on a 5-bracket market = 20% win rate
+- Random guessing on a 10-bracket market = 10% win rate
+- A 25-30% win rate means you are BETTER than random
+- The question is NOT "how often do I win" but "is my expected value positive"
+- Buying a 0.05 bracket and winning 1 in 10 times = positive EV
+- Buying a 0.50 bracket and winning 6 in 10 times = positive EV
+- DO NOT panic about win rate alone — look at P&L
+
+### What Matters: Edge, Not Win Rate
+- Edge = your_estimated_probability - market_price
+- Positive edge means market is underpricing this outcome
+- A strategy with 20% win rate buying 0.05 brackets is profitable
+- A strategy with 60% win rate buying 0.80 brackets is unprofitable
 
 ## Available Data in context
 Your decide(context) function receives:
 - city, date: which market
-- nws_forecast: NWS official forecast (°F)
+- nws_forecast: NWS official forecast (degrees F)
 - gfs_mean, gfs_low, gfs_high, gfs_spread: GFS ensemble forecast range
 - brackets: list of available brackets with current market prices
-- historical_bias: average (forecast - actual) over recent days (if available)
+- historical_bias: average (forecast - actual) over recent days (always a number, never None)
 - recent_trades: your last 20 trades with outcomes
 - win_rate, total_pnl: your overall performance
 
-## Your Task
-1. Analyze the data. What patterns do you see?
-   - Is the NWS forecast accurate? Does it run hot or cold?
-   - Which brackets are overpriced or underpriced by the market?
-   - Are there city-specific patterns?
-2. Write an IMPROVED strategy as a complete Python function.
-3. Your strategy should get better over time based on what you learn.
+## CRITICAL Rules to Avoid Common Mistakes
 
-## IMPORTANT: Avoid Over-Conservatism
-- A 25% win rate on 16 trades is NOT enough data to call the strategy bad
-- Bracket markets have ~5-7 outcomes, so random would be ~15-20% win rate
-- Do NOT keep shrinking position size each iteration — that's a death spiral
-- Do NOT keep raising thresholds each iteration — you'll never trade
-- If you've made the strategy MORE conservative for 3 versions in a row, try going the OTHER direction
-- Focus on FIXING WHAT'S WRONG (e.g., picking wrong brackets) not just trading less
-- Look at WHICH brackets you missed by — if off by 1 bracket, the issue is calibration, not aggression
-- Position size around 1-5% is reasonable. Below 0.1% is meaningless.
+### 1. Don't Death-Spiral
+If you keep making the strategy MORE conservative every iteration:
+- Position size shrinking each version → STOP, go back to 1-5% range
+- Edge threshold rising each version → STOP, lower it
+- Confidence ceiling lowering each version → STOP, raise it
+This is a feedback loop. You see losses, get scared, trade less, get less data,
+see more variance in small sample, get more scared. Break the cycle.
+
+### 2. Position Size Sanity
+- Reasonable: 0.5% to 5% of bankroll per trade
+- Too small: anything below 0.1% is meaningless — you can't profit
+- Too big: above 10% is dangerous
+
+### 3. Calibration vs Aggression
+Look at your losing trades. Were you off by:
+- 0 brackets (wrong direction entirely) → bad strategy, rethink approach
+- 1 bracket → calibration issue, adjust forecast bias correction
+- 2+ brackets → forecast was wrong, not your fault, this is normal variance
+
+### 4. Use Historical Bias
+If NWS forecast is 70F but actual is usually 67F (bias = +3F), then:
+- adjusted_forecast = nws_forecast - historical_bias
+- This is the SINGLE BIGGEST improvement you can make
+- Track per-city bias if you can
+
+### 5. Find Mispriced Brackets
+The market is not perfectly efficient. Look for:
+- Cheap brackets (under 0.10) when forecast is exactly there → great EV
+- Expensive brackets (over 0.50) where market is overconfident → skip
+- Brackets adjacent to forecast that market underprices → buy
+
+### 6. Don't Over-Engineer
+- 5 simple rules > 50 complex rules
+- Every safety check you add reduces trades
+- You need DATA (more trades) to learn patterns
+- Trading 5x per day with 30% win rate teaches you more than trading 0x with 0% win rate
+
+## Your Task
+1. Look at WHAT WENT WRONG in losing trades — were you off by 1 bracket? Wrong direction?
+2. Look at WHAT WENT RIGHT in winning trades — what was the pattern?
+3. Identify the SINGLE biggest improvement you can make
+4. Write a strategy that fixes that ONE thing
+5. Keep all the things that were working
+
+## Anti-Patterns (Things to NOT Do)
+- DO NOT shrink position size if it's already below 1%
+- DO NOT add more safety checks if you have more than 5 already
+- DO NOT raise edge threshold above 0.20
+- DO NOT raise confidence threshold above 0.70
+- DO NOT add features without removing old ones (keep code simple)
 
 ## Rules for your code
 - Function signature: decide(context) -> dict
 - Return: {{"action": "BUY" or "SKIP", "bracket": "54-55" or None, "confidence": float, "reasoning": str}}
 - You can use: math, statistics, any pure Python logic
 - You CANNOT use: os, sys, requests, subprocess, open, or any I/O
-- Use ONLY ASCII characters in your code — no degree symbols, em dashes, or unicode. Write "degrees F" not "°F"
+- Use ONLY ASCII characters in your code — no degree symbols, em dashes, or unicode. Write "degrees F" not the symbol
 - Be specific in your reasoning — explain WHY you make each decision
-- If you don't have enough data yet, it's OK to SKIP and observe more
+- All numeric context values (nws_forecast, gfs_mean, historical_bias, etc.) are guaranteed numbers, never None
+- If you don't have enough data yet, it's OK to SKIP MOST markets but trade SOME — you need data
 
 Output the complete strategy.py code in a ```python block.
-Start with a docstring that explains your strategy in plain English."""
+Start with a docstring that explains your strategy in 3-4 sentences (plain English).
+Focus on the ONE THING you changed from the previous version and WHY."""
 
 
 def fix_crash(error_msg: str, context: dict,
