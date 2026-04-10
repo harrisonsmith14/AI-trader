@@ -248,6 +248,16 @@ Your decide(context) function receives:
 2. Write an IMPROVED strategy as a complete Python function.
 3. Your strategy should get better over time based on what you learn.
 
+## IMPORTANT: Avoid Over-Conservatism
+- A 25% win rate on 16 trades is NOT enough data to call the strategy bad
+- Bracket markets have ~5-7 outcomes, so random would be ~15-20% win rate
+- Do NOT keep shrinking position size each iteration — that's a death spiral
+- Do NOT keep raising thresholds each iteration — you'll never trade
+- If you've made the strategy MORE conservative for 3 versions in a row, try going the OTHER direction
+- Focus on FIXING WHAT'S WRONG (e.g., picking wrong brackets) not just trading less
+- Look at WHICH brackets you missed by — if off by 1 bracket, the issue is calibration, not aggression
+- Position size around 1-5% is reasonable. Below 0.1% is meaningless.
+
 ## Rules for your code
 - Function signature: decide(context) -> dict
 - Return: {{"action": "BUY" or "SKIP", "bracket": "54-55" or None, "confidence": float, "reasoning": str}}
