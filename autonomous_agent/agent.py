@@ -306,35 +306,40 @@ def check_resolutions(cities: list[str]):
                         break
 
 
-def should_analyze(strategy_version: int) -> tuple[bool, str]:
-    """Determine if Qwen should analyze and potentially rewrite the strategy."""
-    stats = journal.get_trade_stats()
-    entries = journal.get_recent_entries(days=1)
+def should_analyze(strategy_version: int, last_resolved_count: int = 0,
+                   last_analysis_time: float = 0) -> tuple[bool, str]:
+    """Determine if Qwen should analyze and potentially rewrite the strategy.
+
+    Key principle: only analyze when NEW data has come in since last analysis.
+    Prevents re-triggering on the same state every cycle.
+    """
+    import time
+
+    # Cooldown: don't analyze more than once per 2 hours (prevents thrashing)
+    if time.time() - last_analysis_time < 7200:
+        return False, ""
 
     # Not enough data yet
     total_points = len(journal.get_recent_entries(days=14))
     if total_points < 5:
         return False, ""
 
-    # Check for consecutive losses
+    # Count currently resolved trades
     recent_trades = journal.get_recent_entries(days=7, entry_type="trade")
     resolved = [t for t in recent_trades if t.get("result") is not None]
-    if len(resolved) >= 3:
+    current_resolved_count = len(resolved)
+
+    # Only analyze if there are NEW resolutions since last time
+    if current_resolved_count <= last_resolved_count:
+        return False, ""
+
+    # Check for consecutive losses (only on new data)
+    if current_resolved_count >= 3:
         last_3 = resolved[-3:]
         if all(t.get("result") == "LOSS" for t in last_3):
-            return True, "Emergency: 3 consecutive losses. Focus on what went wrong."
+            return True, f"Emergency: 3 consecutive losses among last {current_resolved_count - last_resolved_count} new resolutions."
 
-    # Daily analysis after resolutions come in
-    resolutions_today = [e for e in entries if e.get("type") == "resolution"]
-    if resolutions_today:
-        return True, "Daily analysis after market resolutions."
-
-    # After enough new observations
-    recent_obs = journal.get_recent_entries(days=2)
-    if len(recent_obs) >= 10:
-        return True, f"Accumulated {len(recent_obs)} new data points."
-
-    return False, ""
+    return True, f"New resolutions: {current_resolved_count - last_resolved_count} trades resolved since last analysis."
 
 
 def main():
@@ -414,7 +419,14 @@ def main():
         print()
 
     try:
+        import time as _time
         cycle = 0
+        last_analysis_time = 0
+        last_resolved_count = len([
+            t for t in journal.get_recent_entries(days=7, entry_type="trade")
+            if t.get("result") is not None
+        ])
+
         while True:
             cycle += 1
 
@@ -427,13 +439,22 @@ def main():
             )
 
             # Check if Qwen should analyze
-            should, reason = should_analyze(strategy_version)
+            should, reason = should_analyze(
+                strategy_version, last_resolved_count, last_analysis_time
+            )
             if should:
                 print(f"\n  Qwen analyzing: {reason}")
                 result = analyst.analyze_and_rewrite(
                     model=args.model, trigger_reason=reason
                 )
                 print(f"  Analysis: {result['analysis'][:300]}")
+
+                # Update state: record time and resolved count at time of analysis
+                last_analysis_time = _time.time()
+                last_resolved_count = len([
+                    t for t in journal.get_recent_entries(days=7, entry_type="trade")
+                    if t.get("result") is not None
+                ])
 
                 if result["rewrote"]:
                     print(f"\n  Strategy rewritten: v{result['old_version']} -> v{result['new_version']}")
