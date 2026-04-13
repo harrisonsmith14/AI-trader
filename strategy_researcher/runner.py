@@ -4,14 +4,13 @@ Runner --- Main daily orchestrator for the 21-day strategy research sprint.
 Coordinates all four phases of the daily cycle:
   Phase 1: Research -- discover a new strategy via web + Qwen
   Phase 2: Implement -- Qwen writes and validates strategy code
-  Phase 3: Test -- run strategy against live BTC 5-min markets
+  Phase 3: Test -- dry-run against live BTC 5-min Polymarket markets
   Phase 4: Analyze -- Qwen reviews results, save everything
 
 CLI:
     python -m strategy_researcher.runner --model qwen3:8b --day 1
     python -m strategy_researcher.runner --model qwen3:8b --day 2
     python -m strategy_researcher.runner --model qwen3:8b --auto
-    python -m strategy_researcher.runner --model qwen3:8b --day 1 --backtest
     python -m strategy_researcher.runner --report
 """
 
@@ -49,8 +48,7 @@ def check_ollama(model: str) -> bool:
 def run_day(day: int, model: str = DEFAULT_MODEL,
             duration_hours: float = 24.0,
             bet_size: float = 1.0,
-            dry_run: bool = True,
-            backtest: bool = False) -> bool:
+            dry_run: bool = True) -> bool:
     """
     Run a single day of the strategy research sprint.
 
@@ -60,7 +58,6 @@ def run_day(day: int, model: str = DEFAULT_MODEL,
         duration_hours: How long to test the strategy
         bet_size: Simulated bet size
         dry_run: If True, don't place real orders
-        backtest: If True, use historical data instead of live markets
 
     Returns:
         True if all phases completed successfully.
@@ -68,7 +65,7 @@ def run_day(day: int, model: str = DEFAULT_MODEL,
     print(f"\n{'='*60}")
     print(f"  STRATEGY RESEARCH SPRINT -- DAY {day}/21")
     print(f"  Model: {model}")
-    print(f"  Mode: {'BACKTEST' if backtest else 'DRY RUN' if dry_run else 'LIVE'}")
+    print(f"  Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
 
@@ -120,19 +117,17 @@ def run_day(day: int, model: str = DEFAULT_MODEL,
     # ── Phase 3: Test ────────────────────────────────────────────
     print(f"  Phase 3: TEST")
     print(f"  {'─'*50}")
+    print(f"  Running {'dry-run' if dry_run else 'live'} test for {duration_hours}h...")
+    print(f"  Price source: Chainlink RTDS (CEX fallback)")
+    print(f"  Market odds: CLOB API (real token prices)")
     start = time.time()
 
-    if backtest:
-        print(f"  Running backtest against historical data...")
-        test_results = tester.run_backtest(decide_fn, day, bet_size=bet_size)
-    else:
-        print(f"  Running {'dry-run' if dry_run else 'live'} test for {duration_hours}h...")
-        test_results = tester.run_test(
-            decide_fn, day,
-            duration_hours=duration_hours,
-            bet_size=bet_size,
-            dry_run=dry_run,
-        )
+    test_results = tester.run_test(
+        decide_fn, day,
+        duration_hours=duration_hours,
+        bet_size=bet_size,
+        dry_run=dry_run,
+    )
 
     elapsed = time.time() - start
     metrics = test_results["metrics"]
@@ -163,7 +158,6 @@ def run_day(day: int, model: str = DEFAULT_MODEL,
     # Print analysis excerpt
     analysis_text = analysis.get("analysis_text", "")
     if analysis_text:
-        # Print first ~300 chars
         excerpt = analysis_text[:300].replace('\n', '\n  ')
         print(f"\n  Analysis excerpt:")
         print(f"  {excerpt}...")
@@ -180,19 +174,16 @@ def run_day(day: int, model: str = DEFAULT_MODEL,
 
 def run_auto(model: str = DEFAULT_MODEL, start_day: int = 1,
              duration_hours: float = 24.0, bet_size: float = 1.0,
-             dry_run: bool = True, backtest: bool = False):
+             dry_run: bool = True):
     """
     Run all 21 days automatically.
-
-    In live/dry-run mode, each day runs for duration_hours then moves to the next.
-    In backtest mode, all 21 days run sequentially using historical data.
+    Each day runs for duration_hours against live markets, then moves to the next.
     """
-    # Determine which days have already been completed
     log = researcher.load_strategy_log()
     completed_days = {entry["day"] for entry in log}
 
     for day in range(start_day, 22):
-        if day in completed_days and not backtest:
+        if day in completed_days:
             print(f"\n  Day {day} already completed, skipping...")
             continue
 
@@ -201,14 +192,13 @@ def run_auto(model: str = DEFAULT_MODEL, start_day: int = 1,
             duration_hours=duration_hours,
             bet_size=bet_size,
             dry_run=dry_run,
-            backtest=backtest,
         )
 
         if not success:
             print(f"\n  Day {day} failed. Continuing to next day...")
 
         # Brief pause between days
-        if day < 21 and not backtest:
+        if day < 21:
             print(f"\n  Waiting 30s before starting day {day + 1}...")
             time.sleep(30)
 
@@ -238,8 +228,6 @@ def main():
                         help="Simulated bet size in USD (default: 1.00)")
     parser.add_argument("--live", action="store_true",
                         help="Place real orders (default: dry run)")
-    parser.add_argument("--backtest", action="store_true",
-                        help="Use historical data instead of live markets")
     parser.add_argument("--report", action="store_true",
                         help="Generate final report from completed days")
     parser.add_argument("--status", action="store_true",
@@ -278,7 +266,7 @@ def main():
     print(f"  STRATEGY RESEARCH SPRINT")
     print(f"  21 days of BTC 5-min strategy exploration")
     print(f"  Model: {args.model}")
-    print(f"  Mode: {'BACKTEST' if args.backtest else 'LIVE' if args.live else 'DRY RUN'}")
+    print(f"  Mode: {'LIVE' if args.live else 'DRY RUN'}")
     print(f"  {'='*60}")
 
     if args.auto:
@@ -288,7 +276,6 @@ def main():
             duration_hours=args.duration,
             bet_size=args.bet_size,
             dry_run=not args.live,
-            backtest=args.backtest,
         )
     elif args.day:
         if not 1 <= args.day <= 21:
@@ -300,15 +287,14 @@ def main():
             duration_hours=args.duration,
             bet_size=args.bet_size,
             dry_run=not args.live,
-            backtest=args.backtest,
         )
     else:
         parser.print_help()
         print(f"\n  Examples:")
         print(f"    python -m strategy_researcher.runner --day 1")
-        print(f"    python -m strategy_researcher.runner --day 1 --backtest")
-        print(f"    python -m strategy_researcher.runner --auto --backtest")
-        print(f"    python -m strategy_researcher.runner --auto --duration 1")
+        print(f"    python -m strategy_researcher.runner --day 1 --duration 1")
+        print(f"    python -m strategy_researcher.runner --auto")
+        print(f"    python -m strategy_researcher.runner --auto --duration 12")
         print(f"    python -m strategy_researcher.runner --status")
         print(f"    python -m strategy_researcher.runner --report")
 
@@ -338,7 +324,6 @@ def _print_status():
             pnl_str = f"${pnl:+.4f}"
             print(f"  {day:<5} {'DONE':<12} {name:<30} {wr:<10} {pnl_str:<12}")
         else:
-            # Check if strategy file exists (in progress?)
             files = list(strategies_dir.glob(f"day_{day:02d}_*.py"))
             if files:
                 print(f"  {day:<5} {'IN PROGRESS':<12} {'(code exists)':<30} {'--':<10} {'--':<12}")

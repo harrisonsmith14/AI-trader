@@ -1,5 +1,5 @@
 """
-Tester --- Runs a strategy against live BTC 5-min Polymarket markets.
+Tester --- Runs a strategy against live BTC 5-min Polymarket markets (dry-run).
 
 Phase 3 of the daily cycle. Uses the CORRECT Polymarket price sources:
 
@@ -13,6 +13,8 @@ Phase 3 of the daily cycle. Uses the CORRECT Polymarket price sources:
   - GAMMA API for PTB (Price to Beat) and market resolution.
 
 Resolution rule: close >= open => UP, close < open => DOWN (ties go UP).
+
+No backtesting — only live dry-run against real markets gives accurate results.
 """
 
 import json
@@ -785,99 +787,3 @@ def run_test(decide_fn, day: int,
         "duration_hours": round(actual_hours, 2),
     }
 
-
-# ---------------------------------------------------------------------------
-# Backtest (historical candles — offline)
-# ---------------------------------------------------------------------------
-
-def run_backtest(decide_fn, day: int,
-                 candles: list[dict] = None,
-                 bet_size: float = 1.0) -> dict:
-    """
-    Run a strategy against historical candle data (offline backtest).
-
-    NOTE: Uses Coinbase candles, not Chainlink historical data.
-    Odds are simulated at 50/50. This is a rough sanity check only —
-    live dry-run is the real test.
-    """
-    if candles is None:
-        from data.fetch_prices import load_cached_candles
-        candles = load_cached_candles()
-
-    if len(candles) < 25:
-        logger.error("Not enough candle data for backtest (need at least 25)")
-        return {"trades": [], "metrics": compute_metrics([]), "duration_hours": 0}
-
-    trade_results = []
-
-    for i in range(20, len(candles)):
-        candle = candles[i]
-        ptb = candle["open"]
-        close_price = candle["close"]
-
-        history_candles = candles[max(0, i - 20):i]
-        price_history = [c["close"] for c in history_candles]
-
-        # 50/50 odds — we don't have historical CLOB data
-        market_odds = {"up": 0.50, "down": 0.50}
-
-        context = _build_context(
-            btc_price=ptb,
-            price_history=price_history,
-            market_odds=market_odds,
-            time_in_window=240.0,
-            trade_results=trade_results,
-            volume=150000.0,
-        )
-
-        try:
-            decision = decide_fn(context)
-        except Exception as e:
-            decision = {"action": "SKIP", "confidence": 0.0, "reasoning": f"Error: {e}"}
-
-        action = decision.get("action", "SKIP")
-        confidence = decision.get("confidence", 0.0)
-        reasoning = decision.get("reasoning", "")
-
-        if action in ("UP", "DOWN"):
-            # Polymarket rule: >= is UP
-            actual = "UP" if close_price >= ptb else "DOWN"
-            won = actual == action
-
-            buy_price = market_odds.get("up" if action == "UP" else "down", 0.5)
-            pnl = bet_size * (1.0 - buy_price) if won else -bet_size * buy_price
-
-            trade_results.append({
-                "window_start": candle["open_time"],
-                "action": action,
-                "confidence": confidence,
-                "reasoning": reasoning,
-                "btc_price": ptb,
-                "ptb": ptb,
-                "close_price": close_price,
-                "market_odds": market_odds,
-                "price_source": "backtest_coinbase",
-                "result": "WIN" if won else "LOSS",
-                "pnl": round(pnl, 4),
-                "bet_size": bet_size,
-            })
-        else:
-            trade_results.append({
-                "window_start": candle["open_time"],
-                "action": "SKIP",
-                "confidence": confidence,
-                "reasoning": reasoning,
-                "btc_price": ptb,
-                "ptb": ptb,
-                "market_odds": market_odds,
-                "price_source": "backtest_coinbase",
-                "result": None,
-                "pnl": None,
-            })
-
-    metrics = compute_metrics(trade_results)
-    return {
-        "trades": trade_results,
-        "metrics": metrics,
-        "duration_hours": len(candles) * 5 / 60,
-    }
