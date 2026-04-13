@@ -323,13 +323,29 @@ If NWS forecast is 70F but actual is usually 67F (bias = +3F), then:
 - This is the SINGLE BIGGEST improvement you can make
 - Track per-city bias if you can
 
-### 5. Find Mispriced Brackets
+### 5. Find Mispriced Brackets — THIS IS THE KEY TO PROFITABILITY
 The market is not perfectly efficient. Look for:
 - Cheap brackets (under 0.10) when forecast is exactly there → great EV
 - Expensive brackets (over 0.50) where market is overconfident → skip
 - Brackets adjacent to forecast that market underprices → buy
 
-### 6. Don't Over-Engineer
+### 6. BRACKET PRICE IS EVERYTHING — Learn From Real Results
+Look at the actual winning trades in the data:
+- Chicago 46+ @ 0.03 → won +0.97 (32x return!)
+- Miami 78-79 @ 0.17 → won +0.83 (5x return)
+- Atlanta 68-69 @ 0.35 → won +0.65 (2x return)
+
+Now look at losses — most are brackets priced at 0.30-0.50.
+THE MATH: At 20% win rate (which is what we actually get):
+- Buying at 0.10: win 20% of time → EV = 0.20 * 1.00 - 0.80 * 0.10 = +0.12 (PROFITABLE)
+- Buying at 0.20: win 20% of time → EV = 0.20 * 1.00 - 0.80 * 0.20 = +0.04 (PROFITABLE)
+- Buying at 0.30: win 20% of time → EV = 0.20 * 1.00 - 0.80 * 0.30 = -0.04 (LOSING)
+- Buying at 0.40: win 20% of time → EV = 0.20 * 1.00 - 0.80 * 0.40 = -0.12 (LOSING)
+
+RULE: Prefer brackets priced UNDER 0.25. Avoid brackets priced over 0.35.
+The best trades are cheap brackets where you have a slight edge.
+
+### 7. Don't Over-Engineer
 - 5 simple rules > 50 complex rules
 - Every safety check you add reduces trades
 - You need DATA (more trades) to learn patterns
