@@ -255,75 +255,76 @@ def check_resolutions(cities: list[str]):
 
                     print(f"    {city} {target_date}: Actual {actual}°F → {winning_bracket}°F bracket")
 
-                # Log resolution
-                journal.log_resolution(city, target_date, actual, winning_bracket)
+                    # Log resolution
+                    journal.log_resolution(city, target_date, actual, winning_bracket)
 
-                # Log weather history for bias tracking
-                weather_data.log_weather_history({
-                    "city": city,
-                    "date": target_date,
-                    "actual_temp": actual,
-                    "nws_forecast": None,  # We'd need to have saved this
-                })
+                    # Log weather history for bias tracking
+                    weather_data.log_weather_history({
+                        "city": city,
+                        "date": target_date,
+                        "actual_temp": actual,
+                        "nws_forecast": None,  # We'd need to have saved this
+                    })
 
-                # Update trade results (look back far enough to cover target_date)
-                trades = journal.get_recent_entries(days=30, entry_type="trade")
-                for trade in trades:
-                    if trade.get("city") == city and trade.get("date") == target_date and trade.get("result") is None:
-                        bracket_chosen = trade.get("bracket_chosen", "")
-                        won = False
+                    # Update trade results (look back far enough to cover target_date)
+                    trades = journal.get_recent_entries(days=30, entry_type="trade")
+                    for trade in trades:
+                        if trade.get("city") == city and trade.get("date") == target_date and trade.get("result") is None:
+                            bracket_chosen = trade.get("bracket_chosen", "")
+                            won = False
 
-                        # Exact bracket match: "50-51" == "50-51"
-                        if bracket_chosen == winning_bracket:
-                            won = True
-                        # Threshold bracket: "46+" means 46 or higher
-                        elif bracket_chosen.endswith("+"):
-                            try:
-                                threshold = int(bracket_chosen[:-1])
-                                won = actual >= threshold
-                            except ValueError:
-                                pass
-                        # Below threshold: "<46" means below 46
-                        elif bracket_chosen.startswith("<"):
-                            try:
-                                threshold = int(bracket_chosen[1:])
-                                won = actual < threshold
-                            except ValueError:
-                                pass
+                            # Exact bracket match: "50-51" == "50-51"
+                            if bracket_chosen == winning_bracket:
+                                won = True
+                            # Threshold bracket: "46+" means 46 or higher
+                            elif bracket_chosen.endswith("+"):
+                                try:
+                                    threshold = int(bracket_chosen[:-1])
+                                    won = actual >= threshold
+                                except ValueError:
+                                    pass
+                            # Below threshold: "<46" means below 46
+                            elif bracket_chosen.startswith("<"):
+                                try:
+                                    threshold = int(bracket_chosen[1:])
+                                    won = actual < threshold
+                                except ValueError:
+                                    pass
 
-                        bracket_price = trade.get("bracket_price", 0.5)
-                        if won:
-                            pnl = round((1.0 - bracket_price), 2)
-                        else:
-                            pnl = round(-bracket_price, 2)
+                            bracket_price = trade.get("bracket_price", 0.5)
+                            if won:
+                                pnl = round((1.0 - bracket_price), 2)
+                            else:
+                                pnl = round(-bracket_price, 2)
 
-                        result = "WIN" if won else "LOSS"
-                        journal.update_trade_result(city, target_date, result, pnl)
-                        print(f"    Trade result: {result} | P&L: ${pnl:+.2f}")
+                            result = "WIN" if won else "LOSS"
+                            journal.update_trade_result(city, target_date, result, pnl)
+                            print(f"    Trade result: {result} | P&L: ${pnl:+.2f}")
 
-                # Log observation for skipped markets
-                skips = journal.get_recent_entries(days=30, entry_type="skip")
-                for skip in skips:
-                    if skip.get("city") == city and skip.get("date") == target_date:
-                        # What would have happened?
-                        bracket_prices = skip.get("bracket_prices", [])
-                        best_price = None
-                        for bp in bracket_prices:
-                            if isinstance(bp, dict):
-                                for rng, price in bp.items():
-                                    if rng == winning_bracket:
-                                        best_price = price
-                                        break
+                    # Log observation for skipped markets
+                    skips = journal.get_recent_entries(days=30, entry_type="skip")
+                    for skip in skips:
+                        if skip.get("city") == city and skip.get("date") == target_date:
+                            # What would have happened?
+                            bracket_prices = skip.get("bracket_prices", [])
+                            best_price = None
+                            for bp in bracket_prices:
+                                if isinstance(bp, dict):
+                                    for rng, price in bp.items():
+                                        if rng == winning_bracket:
+                                            best_price = price
+                                            break
 
-                        journal.log_observation(
-                            city=city, date=target_date,
-                            nws_forecast=skip.get("nws_forecast"),
-                            actual_temp=actual,
-                            winning_bracket=winning_bracket,
-                            best_bracket_price=best_price,
-                            hypothetical_pnl=round(1.0 - best_price, 2) if best_price else None,
-                        )
-                        break
+                            journal.log_observation(
+                                city=city, date=target_date,
+                                nws_forecast=skip.get("nws_forecast"),
+                                actual_temp=actual,
+                                winning_bracket=winning_bracket,
+                                best_bracket_price=best_price,
+                                hypothetical_pnl=round(1.0 - best_price, 2) if best_price else None,
+                            )
+                            break
+                    break  # Found target_date record, stop looking
 
 
 def should_analyze(strategy_version: int, last_resolved_count: int = 0,
