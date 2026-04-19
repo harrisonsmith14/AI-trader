@@ -206,50 +206,70 @@ def scan_and_decide(cities: list[str], decide_fn, strategy_version: int,
 
 
 def check_resolutions(cities: list[str]):
-    """Check if any recent markets have resolved and update journal."""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    """Check if any recent markets have resolved and update journal.
 
-    # Skip if we already logged resolutions for yesterday
-    existing_resolutions = journal.get_recent_entries(days=3, entry_type="resolution")
+    Catches up on ALL past dates where trades are pending, not just yesterday.
+    Handles cases where the bot was offline and missed resolution cycles.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Find all unique past dates where trades are pending (need resolution)
+    pending_trades = [
+        t for t in journal.get_recent_entries(days=30, entry_type="trade")
+        if t.get("result") is None and t.get("date", "") < today
+    ]
+    pending_dates = sorted(set(t.get("date") for t in pending_trades))
+
+    # Also include yesterday for normal skip tracking
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if yesterday not in pending_dates:
+        pending_dates.append(yesterday)
+
+    existing_resolutions = journal.get_recent_entries(days=30, entry_type="resolution")
     already_resolved = {(r.get("city"), r.get("date")) for r in existing_resolutions}
 
-    print(f"\n  Checking resolutions for {yesterday}...")
+    if not pending_dates:
+        return
 
-    for city in cities:
-        if (city, yesterday) in already_resolved:
-            continue
+    print(f"\n  Checking resolutions for {len(pending_dates)} date(s): {', '.join(pending_dates)}...")
 
-        # Get historical actual temperature
-        actuals = weather_data.get_historical_actuals(city, days=3)
+    for target_date in pending_dates:
+        for city in cities:
+            if (city, target_date) in already_resolved:
+                continue
 
-        if not actuals:
-            continue
+            # Get historical actuals (look back enough days to cover target)
+            days_back = (datetime.now() - datetime.strptime(target_date, "%Y-%m-%d")).days + 2
+            actuals = weather_data.get_historical_actuals(city, days=days_back)
 
-        # Find yesterday's actual
-        for record in actuals:
-            if record["date"] == yesterday:
-                actual = record["actual_high"]
-                actual_int = int(round(actual))
-                low = actual_int - (actual_int % 2)
-                winning_bracket = f"{low}-{low+1}"
+            if not actuals:
+                continue
 
-                print(f"    {city} {yesterday}: Actual {actual}°F → {winning_bracket}°F bracket")
+            # Find target date's actual
+            for record in actuals:
+                if record["date"] == target_date:
+                    actual = record["actual_high"]
+                    actual_int = int(round(actual))
+                    low = actual_int - (actual_int % 2)
+                    winning_bracket = f"{low}-{low+1}"
+
+                    print(f"    {city} {target_date}: Actual {actual}°F → {winning_bracket}°F bracket")
 
                 # Log resolution
-                journal.log_resolution(city, yesterday, actual, winning_bracket)
+                journal.log_resolution(city, target_date, actual, winning_bracket)
 
                 # Log weather history for bias tracking
                 weather_data.log_weather_history({
                     "city": city,
-                    "date": yesterday,
+                    "date": target_date,
                     "actual_temp": actual,
                     "nws_forecast": None,  # We'd need to have saved this
                 })
 
-                # Update trade results
-                trades = journal.get_recent_entries(days=3, entry_type="trade")
+                # Update trade results (look back far enough to cover target_date)
+                trades = journal.get_recent_entries(days=30, entry_type="trade")
                 for trade in trades:
-                    if trade.get("city") == city and trade.get("date") == yesterday and trade.get("result") is None:
+                    if trade.get("city") == city and trade.get("date") == target_date and trade.get("result") is None:
                         bracket_chosen = trade.get("bracket_chosen", "")
                         won = False
 
@@ -278,13 +298,13 @@ def check_resolutions(cities: list[str]):
                             pnl = round(-bracket_price, 2)
 
                         result = "WIN" if won else "LOSS"
-                        journal.update_trade_result(city, yesterday, result, pnl)
+                        journal.update_trade_result(city, target_date, result, pnl)
                         print(f"    Trade result: {result} | P&L: ${pnl:+.2f}")
 
                 # Log observation for skipped markets
-                skips = journal.get_recent_entries(days=3, entry_type="skip")
+                skips = journal.get_recent_entries(days=30, entry_type="skip")
                 for skip in skips:
-                    if skip.get("city") == city and skip.get("date") == yesterday:
+                    if skip.get("city") == city and skip.get("date") == target_date:
                         # What would have happened?
                         bracket_prices = skip.get("bracket_prices", [])
                         best_price = None
@@ -296,7 +316,7 @@ def check_resolutions(cities: list[str]):
                                         break
 
                         journal.log_observation(
-                            city=city, date=yesterday,
+                            city=city, date=target_date,
                             nws_forecast=skip.get("nws_forecast"),
                             actual_temp=actual,
                             winning_bracket=winning_bracket,
